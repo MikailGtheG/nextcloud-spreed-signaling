@@ -852,51 +852,89 @@ func (h *Hub) CreateProxyToken(publisherId string) (string, error) {
 	return withToken.CreateToken(publisherId)
 }
 
-// +checklocks:h.mu
+// checkExpiredSessions snapshots expired sessions while holding the hub lock.
+// Closing a session can mutate the session maps, so never close it while
+// iterating over a map (even if the lock is temporarily released).
 func (h *Hub) checkExpiredSessions(now time.Time) {
-	for session, expires := range h.expiredSessions {
-		if now.After(expires) {
-			h.mu.Unlock()
-			h.logger.Printf("Closing expired session %s (private=%s)", session.PublicId(), session.PrivateId())
-			session.Close()
-			h.mu.Lock()
-			// Should already be deleted by the close code, but better be sure.
+	h.mu.Lock()
+	expired := make([]Session, 0)
+	for session, deadline := range h.expiredSessions {
+		if now.After(deadline) {
+			expired = append(expired, session)
+		}
+	}
+	h.mu.Unlock()
+
+	for _, session := range expired {
+		h.mu.Lock()
+		deadline, found := h.expiredSessions[session]
+		if found && now.After(deadline) {
 			delete(h.expiredSessions, session)
 		}
+		h.mu.Unlock()
+		if !found || !now.After(deadline) {
+			continue // The session was resumed or its expiry changed.
+		}
+
+		h.logger.Printf("Closing expired session %s", session.PublicId())
+		session.Close()
 	}
 }
 
-// +checklocks:h.mu
 func (h *Hub) checkAnonymousSessions(now time.Time) {
-	for session, timeout := range h.anonymousSessions {
-		if now.After(timeout) {
-			// This will close the client connection.
-			h.mu.Unlock()
-			if client := session.GetClient(); client != nil {
-				client.SendByeResponseWithReason(nil, "room_join_timeout")
-			}
-			session.Close()
-			h.mu.Lock()
+	h.mu.Lock()
+	expired := make([]*ClientSession, 0)
+	for session, deadline := range h.anonymousSessions {
+		if now.After(deadline) {
+			expired = append(expired, session)
 		}
+	}
+	h.mu.Unlock()
+
+	for _, session := range expired {
+		h.mu.Lock()
+		deadline, found := h.anonymousSessions[session]
+		if found && now.After(deadline) {
+			delete(h.anonymousSessions, session)
+		}
+		h.mu.Unlock()
+		if !found || !now.After(deadline) {
+			continue
+		}
+
+		if client := session.GetClient(); client != nil {
+			client.SendByeResponseWithReason(nil, "room_join_timeout")
+		}
+		session.Close()
 	}
 }
 
-// +checklocks:h.mu
 func (h *Hub) checkInitialHello(now time.Time) {
-	for client, timeout := range h.expectHelloClients {
-		if now.After(timeout) {
-			// This will close the client connection.
-			h.mu.Unlock()
-			client.SendByeResponseWithReason(nil, "hello_timeout")
-			h.mu.Lock()
+	h.mu.Lock()
+	expired := make([]ClientWithSession, 0)
+	for client, deadline := range h.expectHelloClients {
+		if now.After(deadline) {
+			expired = append(expired, client)
 		}
+	}
+	h.mu.Unlock()
+
+	for _, client := range expired {
+		h.mu.Lock()
+		deadline, found := h.expectHelloClients[client]
+		if found && now.After(deadline) {
+			delete(h.expectHelloClients, client)
+		}
+		h.mu.Unlock()
+		if !found || !now.After(deadline) || client.IsAuthenticated() {
+			continue
+		}
+
+		client.SendByeResponseWithReason(nil, "hello_timeout")
 	}
 }
 
 func (h *Hub) performHousekeeping(now time.Time) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	h.checkExpiredSessions(now)
 	h.checkAnonymousSessions(now)
 	h.checkInitialHello(now)
