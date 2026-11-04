@@ -45,6 +45,10 @@ import (
 const (
 	EventsSubprotocol = "janus-events"
 
+	// Janus events may be batched, but accepting unbounded WebSocket messages
+	// allows a peer to exhaust memory before JSON decoding can reject input.
+	maxJanusEventMessageSize = 4 * 1024 * 1024
+
 	// Time allowed to write a message to the peer.
 	writeWait = 10 * time.Second
 
@@ -239,6 +243,8 @@ func (h *EventsHandler) readPump() {
 		return
 	}
 
+	conn.SetReadLimit(maxJanusEventMessageSize)
+
 	conn.SetPongHandler(func(msg string) error {
 		now := time.Now()
 		conn.SetReadDeadline(now.Add(pongWait)) // nolint
@@ -282,7 +288,7 @@ func (h *EventsHandler) readPump() {
 		if data := decodeBuffer.Bytes(); data[0] != '[' {
 			var event janusEvent
 			if err := json.Unmarshal(data, &event); err != nil {
-				h.logger.Printf("Error decoding message %s from %s: %v", decodeBuffer.String(), h.addr, err)
+				h.logger.Printf("Error decoding Janus event from %s (%d bytes): %v", h.addr, decodeBuffer.Len(), err)
 				bufferPool.Put(decodeBuffer)
 				break
 			}
@@ -290,7 +296,7 @@ func (h *EventsHandler) readPump() {
 			events = append(events, event)
 		} else {
 			if err := json.Unmarshal(data, &events); err != nil {
-				h.logger.Printf("Error decoding message %s from %s: %v", decodeBuffer.String(), h.addr, err)
+				h.logger.Printf("Error decoding Janus event from %s (%d bytes): %v", h.addr, decodeBuffer.Len(), err)
 				bufferPool.Put(decodeBuffer)
 				break
 			}
