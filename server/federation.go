@@ -133,7 +133,7 @@ type FederationClient struct {
 
 func NewFederationClient(ctx context.Context, hub *Hub, session *ClientSession, message *api.ClientMessage) (*FederationClient, error) {
 	if message.Type != "room" || message.Room == nil || message.Room.Federation == nil {
-		return nil, fmt.Errorf("expected federation room message, got %+v", message)
+		return nil, errors.New("expected a federation room message")
 	}
 
 	dialer := &websocket.Dialer{
@@ -273,9 +273,9 @@ func (c *FederationClient) connect(ctx context.Context) error {
 
 func (c *FederationClient) ChangeRoom(message *api.ClientMessage) error {
 	if message.Room == nil || message.Room.Federation == nil {
-		return fmt.Errorf("expected federation room message, got %+v", message)
+		return errors.New("expected a federation room message")
 	} else if !c.CanReuse(message.Room.Federation) {
-		return fmt.Errorf("can't reuse federation client to join room in %+v", message)
+		return errors.New("federation client cannot be reused for this room")
 	}
 
 	c.message.Swap(message)
@@ -520,7 +520,7 @@ func (c *FederationClient) sendHelloLocked(auth *api.FederationAuthParams) error
 
 	authData, err := json.Marshal(auth)
 	if err != nil {
-		return fmt.Errorf("Error marshalling hello auth message %+v for %s: %s", auth, c.session.PublicId(), err)
+		return fmt.Errorf("error marshalling federation hello auth for session %s: %w", c.session.PublicId(), err)
 	}
 
 	c.helloAuth = auth
@@ -1047,7 +1047,7 @@ func (c *FederationClient) sendMessageLocked(message *api.ClientMessage) error {
 			return err
 		}
 
-		c.logger.Printf("Could not send message %+v for %s to federated client %s: %v", message, c.session.PublicId(), c.URL(), err)
+		c.logger.Printf("Could not send federation message type %q for %s to federated client %s: %v", message.Type, c.session.PublicId(), c.URL(), err)
 		c.deferMessage(message)
 		c.scheduleReconnectLocked()
 	}
