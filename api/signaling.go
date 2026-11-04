@@ -699,6 +699,9 @@ func validateFederationURL(u *url.URL, signaling bool) error {
 	if u.User != nil || u.Fragment != "" {
 		return errors.New("userinfo and fragments are not allowed")
 	}
+	if signaling && (u.RawQuery != "" || u.ForceQuery) {
+		return errors.New("query parameters are not allowed in signaling base URLs")
+	}
 	if signaling {
 		switch u.Scheme {
 		case "http", "https", "ws", "wss":
