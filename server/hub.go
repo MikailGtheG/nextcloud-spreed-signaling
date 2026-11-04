@@ -2108,7 +2108,7 @@ func (h *Hub) publishFederatedSessions() (int, *sync.WaitGroup) {
 				defer cancel()
 
 				if err := h.roomPing.SendPings(sendCtx, roomId, url, entries); err != nil {
-					h.logger.Printf("Error pinging room %s for active entries %+v: %s", roomId, entries, err)
+					h.logger.Printf("Error pinging room %s for %d active entries: %s", roomId, len(entries), err)
 				}
 			}(roomId, urls[u], e)
 		}
@@ -2393,7 +2393,7 @@ func (h *Hub) processMessageMsg(sess Session, message *api.ClientMessage) {
 		}
 	}
 	if subject == "" {
-		h.logger.Printf("Unknown recipient in message %+v from %s", msg, session.PublicId())
+		h.logger.Printf("Unknown recipient in message from session %s", session.PublicId())
 		return
 	}
 
@@ -2427,18 +2427,18 @@ func (h *Hub) processMessageMsg(sess Session, message *api.ClientMessage) {
 
 				mc, err := recipient.GetOrCreateSubscriber(ctx, h.mcu, session.PublicId(), sfu.StreamType(clientData.RoomType))
 				if err != nil {
-					h.logger.Printf("Could not create MCU subscriber for session %s to send %+v to %s: %s", session.PublicId(), clientData, recipient.PublicId(), err)
+					h.logger.Printf("Could not create MCU subscriber for session %s to %s: %s", session.PublicId(), recipient.PublicId(), err)
 					sendMcuClientNotFound(session, message)
 					return
 				} else if mc == nil {
-					h.logger.Printf("No MCU subscriber found for session %s to send %+v to %s", session.PublicId(), clientData, recipient.PublicId())
+					h.logger.Printf("No MCU subscriber found for session %s to %s", session.PublicId(), recipient.PublicId())
 					sendMcuClientNotFound(session, message)
 					return
 				}
 
 				mc.SendMessage(session.Context(), msg, clientData, func(err error, response api.StringMap) {
 					if err != nil {
-						h.logger.Printf("Could not send MCU message %+v for session %s to %s: %s", clientData, session.PublicId(), recipient.PublicId(), err)
+						h.logger.Printf("Could not send MCU message for session %s to %s: %s", session.PublicId(), recipient.PublicId(), err)
 						sendMcuProcessingFailed(session, message)
 						return
 					} else if response == nil {
@@ -2519,7 +2519,7 @@ func isAllowedToControl(session Session) bool {
 func (h *Hub) processControlMsg(session Session, message *api.ClientMessage) {
 	msg := message.Control
 	if !isAllowedToControl(session) {
-		h.logger.Printf("Ignore control message %+v from %s", msg, session.PublicId())
+		h.logger.Printf("Ignore control message from %s", session.PublicId())
 		return
 	}
 
@@ -2587,7 +2587,7 @@ func (h *Hub) processControlMsg(session Session, message *api.ClientMessage) {
 		}
 	}
 	if subject == "" {
-		h.logger.Printf("Unknown recipient in message %+v from %s", msg, session.PublicId())
+		h.logger.Printf("Unknown recipient in message from session %s", session.PublicId())
 		return
 	}
 
@@ -2636,7 +2636,7 @@ func (h *Hub) processInternalMsg(sess Session, message *api.ClientMessage) {
 		// Client is not connected yet.
 		return
 	} else if session.ClientType() != api.HelloClientTypeInternal {
-		h.logger.Printf("Ignore internal message %+v from %s", msg, session.PublicId())
+		h.logger.Printf("Ignore internal message from %s", session.PublicId())
 		return
 	}
 
@@ -2649,7 +2649,7 @@ func (h *Hub) processInternalMsg(sess Session, message *api.ClientMessage) {
 		msg := msg.AddSession
 		room := h.GetRoomForBackend(msg.RoomId, session.Backend())
 		if room == nil {
-			h.logger.Printf("Ignore add session message %+v for invalid room %s from %s", *msg, msg.RoomId, session.PublicId())
+			h.logger.Printf("Ignore add session message for invalid room %s from %s", msg.RoomId, session.PublicId())
 			return
 		}
 
@@ -2726,7 +2726,7 @@ func (h *Hub) processInternalMsg(sess Session, message *api.ClientMessage) {
 		msg := msg.UpdateSession
 		room := h.GetRoomForBackend(msg.RoomId, session.Backend())
 		if room == nil {
-			h.logger.Printf("Ignore remove session message %+v for invalid room %s from %s", *msg, msg.RoomId, session.PublicId())
+			h.logger.Printf("Ignore remove session message for invalid room %s from %s", msg.RoomId, session.PublicId())
 			return
 		}
 
@@ -2764,7 +2764,7 @@ func (h *Hub) processInternalMsg(sess Session, message *api.ClientMessage) {
 		msg := msg.RemoveSession
 		room := h.GetRoomForBackend(msg.RoomId, session.Backend())
 		if room == nil {
-			h.logger.Printf("Ignore remove session message %+v for invalid room %s from %s", *msg, msg.RoomId, session.PublicId())
+			h.logger.Printf("Ignore remove session message for invalid room %s from %s", msg.RoomId, session.PublicId())
 			return
 		}
 
@@ -2828,7 +2828,7 @@ func (h *Hub) processInternalMsg(sess Session, message *api.ClientMessage) {
 			}
 		}
 	default:
-		h.logger.Printf("Ignore unsupported internal message %+v from %s", msg, session.PublicId())
+		h.logger.Printf("Ignore unsupported internal message from %s", session.PublicId())
 		return
 	}
 }
@@ -3042,11 +3042,11 @@ func (h *Hub) processMcuMessage(session *ClientSession, client_message *api.Clie
 		}
 	}
 	if err != nil {
-		h.logger.Printf("Could not create MCU %s for session %s to send %+v to %s: %s", clientType, session.PublicId(), data, message.Recipient.SessionId, err)
+		h.logger.Printf("Could not create MCU %s for session %s to %s: %s", clientType, session.PublicId(), message.Recipient.SessionId, err)
 		sendMcuClientNotFound(session, client_message)
 		return
 	} else if mc == nil {
-		h.logger.Printf("No MCU %s found for session %s to send %+v to %s", clientType, session.PublicId(), data, message.Recipient.SessionId)
+		h.logger.Printf("No MCU %s found for session %s to %s", clientType, session.PublicId(), message.Recipient.SessionId)
 		sendMcuClientNotFound(session, client_message)
 		return
 	}
@@ -3054,7 +3054,7 @@ func (h *Hub) processMcuMessage(session *ClientSession, client_message *api.Clie
 	mc.SendMessage(session.Context(), message, data, func(err error, response api.StringMap) {
 		if err != nil {
 			if !errors.Is(err, api.ErrCandidateFiltered) {
-				h.logger.Printf("Could not send MCU message %+v for session %s to %s: %s", data, session.PublicId(), message.Recipient.SessionId, err)
+				h.logger.Printf("Could not send MCU message for session %s to %s: %s", session.PublicId(), message.Recipient.SessionId, err)
 				sendMcuProcessingFailed(session, client_message)
 			}
 			return
