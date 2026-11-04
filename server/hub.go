@@ -235,6 +235,7 @@ type Hub struct {
 	throttler async.Throttler
 
 	skipFederationVerify bool
+	allowPrivateFederation bool
 	federationTimeout    time.Duration
 
 	allowedCandidates atomic.Pointer[container.IPList]
@@ -309,6 +310,7 @@ func NewHub(ctx context.Context, cfg *goconf.ConfigFile, events events.AsyncEven
 	}
 
 	skipFederationVerify, _ := cfg.GetBool("federation", "skipverify")
+	allowPrivateFederation, _ := cfg.GetBool("federation", "allowprivate")
 	if skipFederationVerify {
 		logger.Println("WARNING: Federation target verification is disabled!")
 	}
@@ -435,6 +437,7 @@ func NewHub(ctx context.Context, cfg *goconf.ConfigFile, events events.AsyncEven
 		throttler: throttler,
 
 		skipFederationVerify: skipFederationVerify,
+		allowPrivateFederation: allowPrivateFederation,
 		federationTimeout:    federationTimeout,
 	}
 	if value, _ := cfg.GetString("mcu", "allowedcandidates"); value != "" {
