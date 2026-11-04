@@ -43,7 +43,8 @@ debug = false
 # or narrow CIDRs. The default additionally trusts private networks, which may
 # allow directly connected local/bridge-network clients to supply forged client
 # IP headers. Ensure the proxy overwrites inbound X-Real-IP and X-Forwarded-For.
-# Leave empty to allow loopback and local addresses.
+# Leave empty to trust only loopback (127.0.0.1 and ::1).
+# Explicitly list the exact proxy IPs if using Docker/bridge networks.
 #trustedproxies =
 
 [sessions]
