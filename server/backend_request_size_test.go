@@ -22,11 +22,11 @@ package server
 import (
 	"bytes"
 	"context"
-
-	"github.com/strukturag/nextcloud-spreed-signaling/v2/talk"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/strukturag/nextcloud-spreed-signaling/v2/talk"
 )
 
 // A declared Content-Length is not sufficient protection against a malformed
