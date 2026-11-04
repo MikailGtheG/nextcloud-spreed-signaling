@@ -131,6 +131,8 @@ func getTestConfig(server *httptest.Server) (*goconf.ConfigFile, error) {
 	config.AddOption("sessions", "blockkey", "09876543210987654321098765432109")
 	config.AddOption("clients", "internalsecret", string(testInternalSecret))
 	config.AddOption("geoip", "url", "none")
+	// Federation tests use isolated local httptest servers, not public hosts.
+	config.AddOption("federation", "allowprivate", "true")
 	return config, nil
 }
 
