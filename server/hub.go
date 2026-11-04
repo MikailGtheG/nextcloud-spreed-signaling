@@ -224,6 +224,7 @@ type Hub struct {
 	backend        *talk.BackendClient
 
 	trustedProxies atomic.Pointer[container.IPList]
+	janusEventsAllowedIPs atomic.Pointer[container.IPList]
 	geoip          *geoip.Lookup
 	geoipOverrides geoip.AtomicOverrides
 	geoipUpdating  atomic.Bool
@@ -307,6 +308,15 @@ func NewHub(ctx context.Context, cfg *goconf.ConfigFile, events events.AsyncEven
 	trustedProxiesIps, err := container.ParseIPList(trustedProxies)
 	if err != nil {
 		return nil, err
+	}
+
+	janusAllowedValue, _ := cfg.GetString("mcu", "januseventsallowedips")
+	janusAllowedIPs := container.DefaultAllowedIPs()
+	if janusAllowedValue != "" {
+		janusAllowedIPs, err = container.ParseIPList(janusAllowedValue)
+		if err != nil {
+			return nil, fmt.Errorf("invalid januseventsallowedips: %w", err)
+		}
 	}
 
 	skipFederationVerify, _ := cfg.GetBool("federation", "skipverify")
@@ -464,6 +474,7 @@ func NewHub(ctx context.Context, cfg *goconf.ConfigFile, events events.AsyncEven
 	}
 
 	hub.trustedProxies.Store(trustedProxiesIps)
+	hub.janusEventsAllowedIPs.Store(janusAllowedIPs)
 	hub.geoipOverrides.Store(geoipOverrides)
 
 	hub.setWelcomeMessage(&api.ServerMessage{
@@ -609,6 +620,17 @@ func (h *Hub) Reload(ctx context.Context, config *goconf.ConfigFile) {
 	} else {
 		h.logger.Printf("Error parsing trusted proxies from \"%s\": %s", trustedProxies, err)
 	}
+
+	janusAllowedValue, _ := config.GetString("mcu", "januseventsallowedips")
+	janusAllowedIPs := container.DefaultAllowedIPs()
+	if janusAllowedValue != "" {
+		if value, err := container.ParseIPList(janusAllowedValue); err != nil {
+			h.logger.Printf("invalid januseventsallowedips: %s", err)
+		} else {
+			janusAllowedIPs = value
+		}
+	}
+	h.janusEventsAllowedIPs.Store(janusAllowedIPs)
 
 	geoipOverrides, _ := geoip.LoadOverrides(ctx, config, true)
 	h.geoipOverrides.Store(geoipOverrides)
@@ -3275,6 +3297,11 @@ func (h *Hub) getRealUserIP(r *http.Request) string {
 }
 
 func (h *Hub) serveWs(w http.ResponseWriter, r *http.Request) {
+	if slices.Contains(websocket.Subprotocols(r), janus.EventsSubprotocol) &&
+		!isAllowedJanusEventPeer(r, h.janusEventsAllowedIPs.Load()) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
 	addr := h.getRealUserIP(r)
 	agent := r.Header.Get("User-Agent")
 
@@ -3290,7 +3317,7 @@ func (h *Hub) serveWs(w http.ResponseWriter, r *http.Request) {
 
 	ctx := log.NewLoggerContext(r.Context(), h.logger)
 	if conn.Subprotocol() == janus.EventsSubprotocol {
-		janus.RunEventsHandler(ctx, h.mcu, conn, addr, agent)
+		janus.RunEventsHandler(ctx, h.mcu, conn, r.RemoteAddr, agent)
 		return
 	}
 
