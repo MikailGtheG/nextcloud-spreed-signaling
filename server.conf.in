@@ -70,6 +70,12 @@ internalsecret = the-shared-secret-for-internal-clients
 # Timeout in seconds for requests to federation targets.
 #timeout = 10
 
+# Security: block federation connections to loopback, RFC1918 and other
+# special-purpose addresses by default. Set true ONLY if federation with
+# explicitly trusted private/LAN installations is required. The resolved
+# destination is filtered and dialed by IP to prevent DNS-rebinding TOCTOU.
+#allowprivate = false
+
 [backend]
 # Type of backend configuration.
 # Defaults to "static".
@@ -169,6 +175,13 @@ connectionsperhost = 8
 # The type of the MCU to use. Currently only "janus" and "proxy" are supported.
 # Leave empty to disable MCU functionality.
 #type =
+
+# Security: direct Janus WebSocket event senders are accepted only from
+# loopback by default (127.0.0.1 and ::1), ignoring forwarded IP headers.
+# If Janus runs in a different container/host, set its exact private IP or
+# narrow CIDR here. Do not expose the janus-events subprotocol publicly.
+# Configure the reverse proxy to deny requests with this subprotocol.
+#januseventsallowedips = 127.0.0.1, ::1
 
 # For type "janus": the URL to the websocket endpoint of the MCU server.
 # For type "proxy": a space-separated list of proxy URLs to connect to.
