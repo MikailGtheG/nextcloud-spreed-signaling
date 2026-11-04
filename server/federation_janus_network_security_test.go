@@ -118,3 +118,19 @@ func TestJanusEventPeerRestrictions(t *testing.T) {
 		t.Fatal("explicit private Janus event sender address denied")
 	}
 }
+
+func TestJanusSubprotocolRejectedBeforeUpgrade(t *testing.T) {
+	h := &Hub{}
+	h.janusEventsAllowedIPs.Store(container.DefaultAllowedIPs())
+
+	for _, peer := range []string{"203.0.113.4:1999", "10.0.0.15:2000"} {
+		r := httptest.NewRequest(http.MethodGet, "http://localhost/spreed", nil)
+		r.RemoteAddr = peer
+		r.Header.Set("Sec-WebSocket-Protocol", "janus-events")
+		w := httptest.NewRecorder()
+		h.serveWs(w, r)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("unauthorized Janus event peer %s was not rejected: status %d", peer, w.Code)
+		}
+	}
+}
