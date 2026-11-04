@@ -1,0 +1,68 @@
+package server
+
+import (
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/strukturag/nextcloud-spreed-signaling/v2/api"
+)
+
+// housekeepingMutationSession intentionally modifies the expiry map from Close.
+// This mimics ordinary session teardown and ensures housekeeping never iterates
+// a map across a callback that can modify that map.
+type housekeepingMutationSession struct {
+	Session
+	hub    *Hub
+	id     api.PublicSessionId
+	closed atomic.Bool
+}
+
+func (s *housekeepingMutationSession) PublicId() api.PublicSessionId {
+	return s.id
+}
+
+func (s *housekeepingMutationSession) Close() {
+	s.hub.mu.Lock()
+	delete(s.hub.expiredSessions, s)
+	s.hub.mu.Unlock()
+	s.closed.Store(true)
+}
+
+func TestHousekeepingExpiredSessionsCanMutateMapOnClose(t *testing.T) {
+	h := &Hub{expiredSessions: make(map[Session]time.Time)}
+	now := time.Now()
+	sessions := make([]*housekeepingMutationSession, 200)
+	for i := range sessions {
+		s := &housekeepingMutationSession{hub: h}
+		sessions[i] = s
+		h.expiredSessions[s] = now.Add(-time.Minute)
+	}
+
+	h.checkExpiredSessions(now)
+
+	for i, s := range sessions {
+		if !s.closed.Load() {
+			t.Errorf("expired session %d was not closed", i)
+		}
+	}
+	if got := len(h.expiredSessions); got != 0 {
+		t.Fatalf("expected no expired sessions, got %d", got)
+	}
+}
+
+func TestHousekeepingDoesNotCloseResumedSession(t *testing.T) {
+	h := &Hub{expiredSessions: make(map[Session]time.Time)}
+	now := time.Now()
+	s := &housekeepingMutationSession{hub: h}
+	h.expiredSessions[s] = now.Add(time.Minute)
+
+	h.checkExpiredSessions(now)
+
+	if s.closed.Load() {
+		t.Fatal("unexpired session was closed")
+	}
+	if got := len(h.expiredSessions); got != 1 {
+		t.Fatalf("expected 1 unexpired session, got %d", got)
+	}
+}
