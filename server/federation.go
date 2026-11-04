@@ -138,6 +138,9 @@ func NewFederationClient(ctx context.Context, hub *Hub, session *ClientSession, 
 
 	dialer := &websocket.Dialer{
 		WriteBufferPool: federationWriteBufferPool,
+		NetDialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return dialFederationEndpoint(ctx, network, address, hub.allowPrivateFederation)
+		},
 	}
 	if hub.skipFederationVerify {
 		dialer.TLSClientConfig = &tls.Config{
