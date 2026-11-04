@@ -848,6 +848,12 @@ func (r *Room) addInternalSessionsLocked(users []api.StringMap, includeClustered
 	}
 
 	skipSession := make(map[api.PublicSessionId]bool)
+	// Build the lookup once instead of scanning every virtual session for
+	// each user lacking a userId (quadratic with large rooms).
+	virtualById := make(map[api.PublicSessionId]*VirtualSession, len(r.virtualSessions))
+	for session := range r.virtualSessions {
+		virtualById[session.PublicId()] = session
+	}
 	for _, user := range users {
 		sessionid, found := user.SessionId()
 		if !found || sessionid == "" {
@@ -861,15 +867,10 @@ func (r *Room) addInternalSessionsLocked(users []api.StringMap, includeClustered
 				user["virtual"] = true
 				user["inCall"] = entry.GetInCall()
 				skipSession[sessionid] = true
-			} else {
-				for session := range r.virtualSessions {
-					if session.PublicId() == sessionid {
-						user["virtual"] = true
-						user["inCall"] = session.GetInCall()
-						skipSession[sessionid] = true
-						break
-					}
-				}
+			} else if session, found := virtualById[sessionid]; found {
+				user["virtual"] = true
+				user["inCall"] = session.GetInCall()
+				skipSession[sessionid] = true
 			}
 		}
 	}
