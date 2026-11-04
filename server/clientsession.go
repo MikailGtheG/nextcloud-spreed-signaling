@@ -839,7 +839,7 @@ func (s *ClientSession) OnIceCandidate(client sfu.Client, candidate any) {
 		}
 	}
 
-	s.logger.Printf("Session %s received candidate %+v for unknown client %s", s.PublicId(), candidate, client.Id())
+	s.logger.Printf("Session %s received candidate for unknown client %s", s.PublicId(), client.Id())
 }
 
 func (s *ClientSession) OnIceCompleted(client sfu.Client) {
@@ -1123,7 +1123,7 @@ func (s *ClientSession) GetSubscriber(id api.PublicSessionId, streamType sfu.Str
 func (s *ClientSession) processAsyncNatsMessage(msg *nats.Msg) {
 	var message events.AsyncMessage
 	if err := nats.Decode(msg, &message); err != nil {
-		s.logger.Printf("Could not decode NATS message %+v: %s", msg, err)
+		s.logger.Printf("Could not decode NATS message: %s", err)
 		return
 	}
 
@@ -1206,7 +1206,7 @@ func (s *ClientSession) processAsyncMessage(message *events.AsyncMessage) {
 
 			mc.SendMessage(s.Context(), nil, message.SendOffer.Data, func(err error, response api.StringMap) {
 				if err != nil {
-					s.logger.Printf("Could not send MCU message %+v for session %s to %s: %s", message.SendOffer.Data, message.SendOffer.SessionId, s.PublicId(), err)
+					s.logger.Printf("Could not send MCU message for session %s to %s: %s", message.SendOffer.SessionId, s.PublicId(), err)
 					if err := s.events.PublishSessionMessage(message.SendOffer.SessionId, s.backend, &events.AsyncMessage{
 						Type: "message",
 						Message: &api.ServerMessage{
@@ -1606,7 +1606,7 @@ func (s *ClientSession) filterAsyncMessage(msg *events.AsyncMessage) *api.Server
 	switch msg.Type {
 	case "message":
 		if msg.Message == nil {
-			s.logger.Printf("Received asynchronous message without payload: %+v", msg)
+			s.logger.Printf("Received asynchronous message type %q without payload", msg.Type)
 			return nil
 		}
 
@@ -1646,7 +1646,7 @@ func (s *ClientSession) filterAsyncMessage(msg *events.AsyncMessage) *api.Server
 				// Can happen mostly during tests where an older room async message
 				// could be received by a subscriber that joined after it was sent.
 				if joined := s.getRoomJoinTime(); joined.IsZero() || msg.SendTime.Before(joined) {
-					s.logger.Printf("Message %+v was sent on %s before session %s join room on %s, ignoring", msg.Message, msg.SendTime, s.publicId, joined)
+					s.logger.Printf("Message sent on %s before session %s joined room on %s, ignoring", msg.SendTime, s.publicId, joined)
 					return nil
 				}
 			}
@@ -1654,7 +1654,7 @@ func (s *ClientSession) filterAsyncMessage(msg *events.AsyncMessage) *api.Server
 
 		return msg.Message
 	default:
-		s.logger.Printf("Received async message with unsupported type %s: %+v", msg.Type, msg)
+		s.logger.Printf("Received async message with unsupported type %q", msg.Type)
 		return nil
 	}
 }
