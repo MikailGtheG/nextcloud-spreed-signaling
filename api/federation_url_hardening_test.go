@@ -35,6 +35,7 @@ func TestFederationURLValidation(t *testing.T) {
 		{"disallowed-signaling-scheme", "file:///etc/passwd", "https://cloud.example.net", true},
 		{"userinfo", "https://name:password@signal.example.net/", "https://cloud.example.net", true},
 		{"fragment", "https://signal.example.net/#fragment", "https://cloud.example.net", true},
+		{"signaling-query", "https://signal.example.net/?source=evil", "https://cloud.example.net", true},
 		{"missing-nextcloud-host", "https://signal.example.net/", "http://", true},
 		{"nextcloud-userinfo", "https://signal.example.net/", "https://name@cloud.example.net/", true},
 		{"nextcloud-websocket-scheme", "https://signal.example.net/", "wss://cloud.example.net", true},
