@@ -3317,7 +3317,8 @@ func (h *Hub) serveWs(w http.ResponseWriter, r *http.Request) {
 
 	ctx := log.NewLoggerContext(r.Context(), h.logger)
 	if conn.Subprotocol() == janus.EventsSubprotocol {
-		janus.RunEventsHandler(ctx, h.mcu, conn, r.RemoteAddr, agent)
+		peerIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+		janus.RunEventsHandler(ctx, h.mcu, conn, peerIP, agent)
 		return
 	}
 
