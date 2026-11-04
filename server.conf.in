@@ -39,6 +39,10 @@ debug = false
 # Comma separated list of trusted proxies (IPs or CIDR networks) that may set
 # the "X-Real-Ip" or "X-Forwarded-For" headers. If both are provided, the
 # "X-Real-Ip" header will take precedence (if valid).
+# SECURITY: In production, configure only the actual reverse-proxy IP addresses
+# or narrow CIDRs. The default additionally trusts private networks, which may
+# allow directly connected local/bridge-network clients to supply forged client
+# IP headers. Ensure the proxy overwrites inbound X-Real-IP and X-Forwarded-For.
 # Leave empty to allow loopback and local addresses.
 #trustedproxies =
 
