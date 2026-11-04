@@ -45,7 +45,7 @@ func TestFederationURLValidation(t *testing.T) {
 			msg := &RoomFederationMessage{
 				SignalingUrl: tt.signaling,
 				NextcloudUrl: tt.nextcloud,
-				Token: "test-token",
+				Token:        "test-token",
 			}
 			err := msg.CheckValid()
 			if tt.wantInvalid && err == nil {
