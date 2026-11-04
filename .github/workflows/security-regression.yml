@@ -25,12 +25,12 @@ jobs:
           cache: true
       - name: Check formatting
         run: |
-          unformatted=$(gofmt -l api/federation_url_hardening_test.go server/backend_request_size_test.go server/housekeeping_hardening_test.go)
+          unformatted=$(gofmt -l api/federation_url_hardening_test.go server/backend_request_size_test.go server/housekeeping_hardening_test.go sfu/janus/events_handler.go sfu/janus/events_handler_test.go)
           test -z "$unformatted" || { echo "$unformatted"; exit 1; }
       - name: Vet and race regression tests
         run: |
-          go vet ./api ./server
-          go test -race -count=1 -timeout=180s -run 'Test(Housekeeping|BackendRequestBodyReadLimit|FederationURLValidation)' ./api ./server
+          go vet ./api ./server ./sfu/janus
+          go test -race -count=1 -timeout=180s -run 'Test(Housekeeping|BackendRequestBodyReadLimit|FederationURLValidation|JanusEventsHandlerRejectsOversizedMessages)' ./api ./server ./sfu/janus
 
   vulnerabilities:
     runs-on: ubuntu-latest
