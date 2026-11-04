@@ -688,6 +688,32 @@ func (m *RoomClientMessage) CheckValid() error {
 	return nil
 }
 
+// validateFederationURL rejects malformed or ambiguous outbound federation
+// endpoints. Private addresses are intentionally not blocked here because
+// deployments may legitimately federate across private networks; network-level
+// allowlists and DNS resolution policy are separate concerns.
+func validateFederationURL(u *url.URL, signaling bool) error {
+	if u == nil || u.Hostname() == "" {
+		return errors.New("missing hostname")
+	}
+	if u.User != nil || u.Fragment != "" {
+		return errors.New("userinfo and fragments are not allowed")
+	}
+	if signaling && (u.RawQuery != "" || u.ForceQuery) {
+		return errors.New("query parameters are not allowed in signaling base URLs")
+	}
+	if signaling {
+		switch u.Scheme {
+		case "http", "https", "ws", "wss":
+		default:
+			return errors.New("unsupported scheme")
+		}
+	} else if u.Scheme != "http" && u.Scheme != "https" {
+		return errors.New("unsupported scheme")
+	}
+	return nil
+}
+
 type RoomFederationMessage struct {
 	SignalingUrl       string   `json:"signaling"`
 	ParsedSignalingUrl *url.URL `json:"-"`
@@ -710,6 +736,9 @@ func (m *RoomFederationMessage) CheckValid() error {
 	if u, err := url.Parse(m.SignalingUrl); err != nil {
 		return fmt.Errorf("invalid signaling url: %w", err)
 	} else {
+		if err := validateFederationURL(u, true); err != nil {
+			return fmt.Errorf("invalid signaling url: %w", err)
+		}
 		m.ParsedSignalingUrl = u
 	}
 	if m.NextcloudUrl == "" {
@@ -717,6 +746,9 @@ func (m *RoomFederationMessage) CheckValid() error {
 	} else if u, err := url.Parse(m.NextcloudUrl); err != nil {
 		return fmt.Errorf("invalid nextcloud url: %w", err)
 	} else {
+		if err := validateFederationURL(u, false); err != nil {
+			return fmt.Errorf("invalid nextcloud url: %w", err)
+		}
 		m.ParsedNextcloudUrl = u
 	}
 	if m.Token == "" {

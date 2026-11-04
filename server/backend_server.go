@@ -336,8 +336,16 @@ func (b *BackendServer) parseRequestBody(f func(context.Context, http.ResponseWr
 			return
 		}
 
+		// Enforce the limit while reading as well, independently of Content-Length.
+		// This protects the buffer pool when a request body has inconsistent framing.
+		r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
 		body, err := b.buffers.ReadAll(r.Body)
 		if err != nil {
+			var maxBytesError *http.MaxBytesError
+			if errors.As(err, &maxBytesError) {
+				http.Error(w, "Request entity too large", http.StatusRequestEntityTooLarge)
+				return
+			}
 			b.logger.Println("Error reading body: ", err)
 			http.Error(w, "Could not read body", http.StatusBadRequest)
 			return
@@ -907,7 +915,7 @@ func (b *BackendServer) roomHandler(ctx context.Context, w http.ResponseWriter, 
 
 	var request talk.BackendServerRoomRequest
 	if err := json.Unmarshal(body, &request); err != nil {
-		b.logger.Printf("Error decoding body %s: %s", string(body), err)
+		b.logger.Printf("Error decoding backend request for room %s (%d bytes): %s", roomid, len(body), err)
 		http.Error(w, "Could not read body", http.StatusBadRequest)
 		return
 	}
@@ -952,7 +960,7 @@ func (b *BackendServer) roomHandler(ctx context.Context, w http.ResponseWriter, 
 	}
 
 	if err != nil {
-		b.logger.Printf("Error processing %s for room %s: %s", string(body), roomid, err)
+		b.logger.Printf("Error processing backend request type %q for room %s: %s", request.Type, roomid, err)
 		http.Error(w, "Error while processing", http.StatusInternalServerError)
 		return
 	}

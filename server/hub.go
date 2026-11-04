@@ -224,6 +224,7 @@ type Hub struct {
 	backend        *talk.BackendClient
 
 	trustedProxies atomic.Pointer[container.IPList]
+	janusEventsAllowedIPs atomic.Pointer[container.IPList]
 	geoip          *geoip.Lookup
 	geoipOverrides geoip.AtomicOverrides
 	geoipUpdating  atomic.Bool
@@ -235,6 +236,7 @@ type Hub struct {
 	throttler async.Throttler
 
 	skipFederationVerify bool
+	allowPrivateFederation bool
 	federationTimeout    time.Duration
 
 	allowedCandidates atomic.Pointer[container.IPList]
@@ -308,7 +310,17 @@ func NewHub(ctx context.Context, cfg *goconf.ConfigFile, events events.AsyncEven
 		return nil, err
 	}
 
+	janusAllowedValue, _ := cfg.GetString("mcu", "januseventsallowedips")
+	janusAllowedIPs := container.DefaultAllowedIPs()
+	if janusAllowedValue != "" {
+		janusAllowedIPs, err = container.ParseIPList(janusAllowedValue)
+		if err != nil {
+			return nil, fmt.Errorf("invalid januseventsallowedips: %w", err)
+		}
+	}
+
 	skipFederationVerify, _ := cfg.GetBool("federation", "skipverify")
+	allowPrivateFederation, _ := cfg.GetBool("federation", "allowprivate")
 	if skipFederationVerify {
 		logger.Println("WARNING: Federation target verification is disabled!")
 	}
@@ -321,8 +333,8 @@ func NewHub(ctx context.Context, cfg *goconf.ConfigFile, events events.AsyncEven
 	if !trustedProxiesIps.Empty() {
 		logger.Printf("Trusted proxies: %s", trustedProxiesIps)
 	} else {
-		trustedProxiesIps = client.DefaultTrustedProxies
-		logger.Printf("No trusted proxies configured, only allowing for %s", trustedProxiesIps)
+		trustedProxiesIps = container.DefaultAllowedIPs()
+		logger.Printf("No trusted proxies configured; only loopback peers may provide forwarding headers: %s", trustedProxiesIps)
 	}
 
 	decodeCaches := make([]*container.LruCache[*session.SessionIdData], 0, numDecodeCaches)
@@ -435,6 +447,7 @@ func NewHub(ctx context.Context, cfg *goconf.ConfigFile, events events.AsyncEven
 		throttler: throttler,
 
 		skipFederationVerify: skipFederationVerify,
+		allowPrivateFederation: allowPrivateFederation,
 		federationTimeout:    federationTimeout,
 	}
 	if value, _ := cfg.GetString("mcu", "allowedcandidates"); value != "" {
@@ -461,6 +474,7 @@ func NewHub(ctx context.Context, cfg *goconf.ConfigFile, events events.AsyncEven
 	}
 
 	hub.trustedProxies.Store(trustedProxiesIps)
+	hub.janusEventsAllowedIPs.Store(janusAllowedIPs)
 	hub.geoipOverrides.Store(geoipOverrides)
 
 	hub.setWelcomeMessage(&api.ServerMessage{
@@ -599,13 +613,24 @@ func (h *Hub) Reload(ctx context.Context, config *goconf.ConfigFile) {
 		if !trustedProxiesIps.Empty() {
 			h.logger.Printf("Trusted proxies: %s", trustedProxiesIps)
 		} else {
-			trustedProxiesIps = client.DefaultTrustedProxies
-			h.logger.Printf("No trusted proxies configured, only allowing for %s", trustedProxiesIps)
+			trustedProxiesIps = container.DefaultAllowedIPs()
+			h.logger.Printf("No trusted proxies configured; only loopback peers may provide forwarding headers: %s", trustedProxiesIps)
 		}
 		h.trustedProxies.Store(trustedProxiesIps)
 	} else {
 		h.logger.Printf("Error parsing trusted proxies from \"%s\": %s", trustedProxies, err)
 	}
+
+	janusAllowedValue, _ := config.GetString("mcu", "januseventsallowedips")
+	janusAllowedIPs := container.DefaultAllowedIPs()
+	if janusAllowedValue != "" {
+		if value, err := container.ParseIPList(janusAllowedValue); err != nil {
+			h.logger.Printf("invalid januseventsallowedips: %s", err)
+		} else {
+			janusAllowedIPs = value
+		}
+	}
+	h.janusEventsAllowedIPs.Store(janusAllowedIPs)
 
 	geoipOverrides, _ := geoip.LoadOverrides(ctx, config, true)
 	h.geoipOverrides.Store(geoipOverrides)
@@ -852,51 +877,89 @@ func (h *Hub) CreateProxyToken(publisherId string) (string, error) {
 	return withToken.CreateToken(publisherId)
 }
 
-// +checklocks:h.mu
+// checkExpiredSessions snapshots expired sessions while holding the hub lock.
+// Closing a session can mutate the session maps, so never close it while
+// iterating over a map (even if the lock is temporarily released).
 func (h *Hub) checkExpiredSessions(now time.Time) {
-	for session, expires := range h.expiredSessions {
-		if now.After(expires) {
-			h.mu.Unlock()
-			h.logger.Printf("Closing expired session %s (private=%s)", session.PublicId(), session.PrivateId())
-			session.Close()
-			h.mu.Lock()
-			// Should already be deleted by the close code, but better be sure.
+	h.mu.Lock()
+	expired := make([]Session, 0)
+	for session, deadline := range h.expiredSessions {
+		if now.After(deadline) {
+			expired = append(expired, session)
+		}
+	}
+	h.mu.Unlock()
+
+	for _, session := range expired {
+		h.mu.Lock()
+		deadline, found := h.expiredSessions[session]
+		if found && now.After(deadline) {
 			delete(h.expiredSessions, session)
 		}
+		h.mu.Unlock()
+		if !found || !now.After(deadline) {
+			continue // The session was resumed or its expiry changed.
+		}
+
+		h.logger.Printf("Closing expired session %s", session.PublicId())
+		session.Close()
 	}
 }
 
-// +checklocks:h.mu
 func (h *Hub) checkAnonymousSessions(now time.Time) {
-	for session, timeout := range h.anonymousSessions {
-		if now.After(timeout) {
-			// This will close the client connection.
-			h.mu.Unlock()
-			if client := session.GetClient(); client != nil {
-				client.SendByeResponseWithReason(nil, "room_join_timeout")
-			}
-			session.Close()
-			h.mu.Lock()
+	h.mu.Lock()
+	expired := make([]*ClientSession, 0)
+	for session, deadline := range h.anonymousSessions {
+		if now.After(deadline) {
+			expired = append(expired, session)
 		}
+	}
+	h.mu.Unlock()
+
+	for _, session := range expired {
+		h.mu.Lock()
+		deadline, found := h.anonymousSessions[session]
+		if found && now.After(deadline) {
+			delete(h.anonymousSessions, session)
+		}
+		h.mu.Unlock()
+		if !found || !now.After(deadline) {
+			continue
+		}
+
+		if client := session.GetClient(); client != nil {
+			client.SendByeResponseWithReason(nil, "room_join_timeout")
+		}
+		session.Close()
 	}
 }
 
-// +checklocks:h.mu
 func (h *Hub) checkInitialHello(now time.Time) {
-	for client, timeout := range h.expectHelloClients {
-		if now.After(timeout) {
-			// This will close the client connection.
-			h.mu.Unlock()
-			client.SendByeResponseWithReason(nil, "hello_timeout")
-			h.mu.Lock()
+	h.mu.Lock()
+	expired := make([]ClientWithSession, 0)
+	for client, deadline := range h.expectHelloClients {
+		if now.After(deadline) {
+			expired = append(expired, client)
 		}
+	}
+	h.mu.Unlock()
+
+	for _, client := range expired {
+		h.mu.Lock()
+		deadline, found := h.expectHelloClients[client]
+		if found && now.After(deadline) {
+			delete(h.expectHelloClients, client)
+		}
+		h.mu.Unlock()
+		if !found || !now.After(deadline) || client.IsAuthenticated() {
+			continue
+		}
+
+		client.SendByeResponseWithReason(nil, "hello_timeout")
 	}
 }
 
 func (h *Hub) performHousekeeping(now time.Time) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	h.checkExpiredSessions(now)
 	h.checkAnonymousSessions(now)
 	h.checkInitialHello(now)
@@ -1061,11 +1124,11 @@ func (h *Hub) processRegister(client ClientWithSession, message *api.ClientMessa
 
 	userId := auth.Auth.UserId
 	if userId != "" {
-		h.logger.Printf("Register user %s@%s from %s in %s (%s) %s (private=%s)", userId, backend.Id(), client.RemoteAddr(), client.Country(), client.UserAgent(), publicSessionId, privateSessionId)
+		h.logger.Printf("Register user %s@%s from %s in %s (%s) %s", userId, backend.Id(), client.RemoteAddr(), client.Country(), client.UserAgent(), publicSessionId)
 	} else if message.Hello.Auth.Type != api.HelloClientTypeClient {
-		h.logger.Printf("Register %s@%s from %s in %s (%s) %s (private=%s)", message.Hello.Auth.Type, backend.Id(), client.RemoteAddr(), client.Country(), client.UserAgent(), publicSessionId, privateSessionId)
+		h.logger.Printf("Register %s@%s from %s in %s (%s) %s", message.Hello.Auth.Type, backend.Id(), client.RemoteAddr(), client.Country(), client.UserAgent(), publicSessionId)
 	} else {
-		h.logger.Printf("Register anonymous@%s from %s in %s (%s) %s (private=%s)", backend.Id(), client.RemoteAddr(), client.Country(), client.UserAgent(), publicSessionId, privateSessionId)
+		h.logger.Printf("Register anonymous@%s from %s in %s (%s) %s", backend.Id(), client.RemoteAddr(), client.Country(), client.UserAgent(), publicSessionId)
 	}
 
 	session, err := NewClientSession(h, privateSessionId, publicSessionId, sessionIdData, backend, message.Hello, auth.Auth)
@@ -1156,7 +1219,7 @@ func (h *Hub) processUnregister(client ClientWithSession) Session {
 	}
 	h.mu.Unlock()
 	if session != nil {
-		h.logger.Printf("Unregister %s (private=%s)", session.PublicId(), session.PrivateId())
+		h.logger.Printf("Unregister %s", session.PublicId())
 		if cs, ok := session.(*ClientSession); ok {
 			cs.ClearClient(client)
 		}
@@ -1181,14 +1244,14 @@ func (h *Hub) processMessage(client ClientWithSession, data []byte) {
 
 	if err := message.CheckValid(); err != nil {
 		if session := client.GetSession(); session != nil {
-			h.logger.Printf("Invalid message %+v from client %s: %v", message, session.PublicId(), err)
+			h.logger.Printf("Invalid message type %q from client %s: %v", message.Type, session.PublicId(), err)
 			if err, ok := err.(*api.Error); ok {
 				session.SendMessage(message.NewErrorServerMessage(err))
 			} else {
 				session.SendMessage(message.NewErrorServerMessage(InvalidFormat))
 			}
 		} else {
-			h.logger.Printf("Invalid message %+v from %s: %v", message, client.RemoteAddr(), err)
+			h.logger.Printf("Invalid message type %q from %s: %v", message.Type, client.RemoteAddr(), err)
 			if err, ok := err.(*api.Error); ok {
 				client.SendMessage(message.NewErrorServerMessage(err))
 			} else {
@@ -1237,9 +1300,9 @@ func (h *Hub) processMessage(client ClientWithSession, data []byte) {
 	case "bye":
 		h.processByeMsg(client, &message)
 	case "hello":
-		h.logger.Printf("Ignore hello %+v for already authenticated connection %s", message.Hello, session.PublicId())
+		h.logger.Printf("Ignore redundant hello for already authenticated connection %s", session.PublicId())
 	default:
-		h.logger.Printf("Ignore unknown message %+v from %s", message, session.PublicId())
+		h.logger.Printf("Ignore unknown message type %q from %s", message.Type, session.PublicId())
 	}
 }
 
@@ -1380,7 +1443,7 @@ func (h *Hub) processHello(client ClientWithSession, message *api.ClientMessage)
 		if !ok {
 			// Should never happen as clients only can resume their own sessions.
 			h.mu.Unlock()
-			h.logger.Printf("Client resumed non-client session %s (private=%s)", session.PublicId(), session.PrivateId())
+			h.logger.Printf("Client resumed non-client session %s", session.PublicId())
 			statsHubSessionResumeFailed.Inc()
 			client.SendMessage(message.NewErrorServerMessage(NoSuchSession))
 			return
@@ -1402,7 +1465,7 @@ func (h *Hub) processHello(client ClientWithSession, message *api.ClientMessage)
 		delete(h.expectHelloClients, client)
 		h.mu.Unlock()
 
-		h.logger.Printf("Resume session from %s in %s (%s) %s (private=%s)", client.RemoteAddr(), client.Country(), client.UserAgent(), session.PublicId(), session.PrivateId())
+		h.logger.Printf("Resume session from %s in %s (%s) %s", client.RemoteAddr(), client.Country(), client.UserAgent(), session.PublicId())
 
 		statsHubSessionsResumedTotal.WithLabelValues(clientSession.Backend().Id(), string(clientSession.ClientType())).Inc()
 		h.sendHelloResponse(clientSession, message)
@@ -2070,7 +2133,7 @@ func (h *Hub) publishFederatedSessions() (int, *sync.WaitGroup) {
 				defer cancel()
 
 				if err := h.roomPing.SendPings(sendCtx, roomId, url, entries); err != nil {
-					h.logger.Printf("Error pinging room %s for active entries %+v: %s", roomId, entries, err)
+					h.logger.Printf("Error pinging room %s for %d active entries: %s", roomId, len(entries), err)
 				}
 			}(roomId, urls[u], e)
 		}
@@ -2222,7 +2285,7 @@ func (h *Hub) processMessageMsg(sess Session, message *api.ClientMessage) {
 			var data api.MessageClientMessageData
 			if err := data.UnmarshalJSON(msg.Data); err == nil {
 				if err := data.CheckValid(); err != nil {
-					h.logger.Printf("Invalid message %+v from client %s: %v", message, session.PublicId(), err)
+					h.logger.Printf("Invalid message type %q from client %s: %v", message.Type, session.PublicId(), err)
 					if err, ok := err.(*api.Error); ok {
 						session.SendMessage(message.NewErrorServerMessage(err))
 					} else {
@@ -2339,7 +2402,7 @@ func (h *Hub) processMessageMsg(sess Session, message *api.ClientMessage) {
 					var data api.MessageClientMessageData
 					if err := data.UnmarshalJSON(msg.Data); err == nil {
 						if err := data.CheckValid(); err != nil {
-							h.logger.Printf("Invalid message %+v from client %s: %v", message, session.PublicId(), err)
+							h.logger.Printf("Invalid message type %q from client %s: %v", message.Type, session.PublicId(), err)
 							if err, ok := err.(*api.Error); ok {
 								session.SendMessage(message.NewErrorServerMessage(err))
 							} else {
@@ -2355,7 +2418,7 @@ func (h *Hub) processMessageMsg(sess Session, message *api.ClientMessage) {
 		}
 	}
 	if subject == "" {
-		h.logger.Printf("Unknown recipient in message %+v from %s", msg, session.PublicId())
+		h.logger.Printf("Unknown recipient in message from session %s", session.PublicId())
 		return
 	}
 
@@ -2389,18 +2452,18 @@ func (h *Hub) processMessageMsg(sess Session, message *api.ClientMessage) {
 
 				mc, err := recipient.GetOrCreateSubscriber(ctx, h.mcu, session.PublicId(), sfu.StreamType(clientData.RoomType))
 				if err != nil {
-					h.logger.Printf("Could not create MCU subscriber for session %s to send %+v to %s: %s", session.PublicId(), clientData, recipient.PublicId(), err)
+					h.logger.Printf("Could not create MCU subscriber for session %s to %s: %s", session.PublicId(), recipient.PublicId(), err)
 					sendMcuClientNotFound(session, message)
 					return
 				} else if mc == nil {
-					h.logger.Printf("No MCU subscriber found for session %s to send %+v to %s", session.PublicId(), clientData, recipient.PublicId())
+					h.logger.Printf("No MCU subscriber found for session %s to %s", session.PublicId(), recipient.PublicId())
 					sendMcuClientNotFound(session, message)
 					return
 				}
 
 				mc.SendMessage(session.Context(), msg, clientData, func(err error, response api.StringMap) {
 					if err != nil {
-						h.logger.Printf("Could not send MCU message %+v for session %s to %s: %s", clientData, session.PublicId(), recipient.PublicId(), err)
+						h.logger.Printf("Could not send MCU message for session %s to %s: %s", session.PublicId(), recipient.PublicId(), err)
 						sendMcuProcessingFailed(session, message)
 						return
 					} else if response == nil {
@@ -2481,7 +2544,7 @@ func isAllowedToControl(session Session) bool {
 func (h *Hub) processControlMsg(session Session, message *api.ClientMessage) {
 	msg := message.Control
 	if !isAllowedToControl(session) {
-		h.logger.Printf("Ignore control message %+v from %s", msg, session.PublicId())
+		h.logger.Printf("Ignore control message from %s", session.PublicId())
 		return
 	}
 
@@ -2549,7 +2612,7 @@ func (h *Hub) processControlMsg(session Session, message *api.ClientMessage) {
 		}
 	}
 	if subject == "" {
-		h.logger.Printf("Unknown recipient in message %+v from %s", msg, session.PublicId())
+		h.logger.Printf("Unknown recipient in message from session %s", session.PublicId())
 		return
 	}
 
@@ -2598,7 +2661,7 @@ func (h *Hub) processInternalMsg(sess Session, message *api.ClientMessage) {
 		// Client is not connected yet.
 		return
 	} else if session.ClientType() != api.HelloClientTypeInternal {
-		h.logger.Printf("Ignore internal message %+v from %s", msg, session.PublicId())
+		h.logger.Printf("Ignore internal message from %s", session.PublicId())
 		return
 	}
 
@@ -2611,7 +2674,7 @@ func (h *Hub) processInternalMsg(sess Session, message *api.ClientMessage) {
 		msg := msg.AddSession
 		room := h.GetRoomForBackend(msg.RoomId, session.Backend())
 		if room == nil {
-			h.logger.Printf("Ignore add session message %+v for invalid room %s from %s", *msg, msg.RoomId, session.PublicId())
+			h.logger.Printf("Ignore add session message for invalid room %s from %s", msg.RoomId, session.PublicId())
 			return
 		}
 
@@ -2688,7 +2751,7 @@ func (h *Hub) processInternalMsg(sess Session, message *api.ClientMessage) {
 		msg := msg.UpdateSession
 		room := h.GetRoomForBackend(msg.RoomId, session.Backend())
 		if room == nil {
-			h.logger.Printf("Ignore remove session message %+v for invalid room %s from %s", *msg, msg.RoomId, session.PublicId())
+			h.logger.Printf("Ignore remove session message for invalid room %s from %s", msg.RoomId, session.PublicId())
 			return
 		}
 
@@ -2726,7 +2789,7 @@ func (h *Hub) processInternalMsg(sess Session, message *api.ClientMessage) {
 		msg := msg.RemoveSession
 		room := h.GetRoomForBackend(msg.RoomId, session.Backend())
 		if room == nil {
-			h.logger.Printf("Ignore remove session message %+v for invalid room %s from %s", *msg, msg.RoomId, session.PublicId())
+			h.logger.Printf("Ignore remove session message for invalid room %s from %s", msg.RoomId, session.PublicId())
 			return
 		}
 
@@ -2790,7 +2853,7 @@ func (h *Hub) processInternalMsg(sess Session, message *api.ClientMessage) {
 			}
 		}
 	default:
-		h.logger.Printf("Ignore unsupported internal message %+v from %s", msg, session.PublicId())
+		h.logger.Printf("Ignore unsupported internal message from %s", session.PublicId())
 		return
 	}
 }
@@ -3004,11 +3067,11 @@ func (h *Hub) processMcuMessage(session *ClientSession, client_message *api.Clie
 		}
 	}
 	if err != nil {
-		h.logger.Printf("Could not create MCU %s for session %s to send %+v to %s: %s", clientType, session.PublicId(), data, message.Recipient.SessionId, err)
+		h.logger.Printf("Could not create MCU %s for session %s to %s: %s", clientType, session.PublicId(), message.Recipient.SessionId, err)
 		sendMcuClientNotFound(session, client_message)
 		return
 	} else if mc == nil {
-		h.logger.Printf("No MCU %s found for session %s to send %+v to %s", clientType, session.PublicId(), data, message.Recipient.SessionId)
+		h.logger.Printf("No MCU %s found for session %s to %s", clientType, session.PublicId(), message.Recipient.SessionId)
 		sendMcuClientNotFound(session, client_message)
 		return
 	}
@@ -3016,7 +3079,7 @@ func (h *Hub) processMcuMessage(session *ClientSession, client_message *api.Clie
 	mc.SendMessage(session.Context(), message, data, func(err error, response api.StringMap) {
 		if err != nil {
 			if !errors.Is(err, api.ErrCandidateFiltered) {
-				h.logger.Printf("Could not send MCU message %+v for session %s to %s: %s", data, session.PublicId(), message.Recipient.SessionId, err)
+				h.logger.Printf("Could not send MCU message for session %s to %s: %s", session.PublicId(), message.Recipient.SessionId, err)
 				sendMcuProcessingFailed(session, client_message)
 			}
 			return
@@ -3234,6 +3297,11 @@ func (h *Hub) getRealUserIP(r *http.Request) string {
 }
 
 func (h *Hub) serveWs(w http.ResponseWriter, r *http.Request) {
+	if slices.Contains(websocket.Subprotocols(r), janus.EventsSubprotocol) &&
+		!isAllowedJanusEventPeer(r, h.janusEventsAllowedIPs.Load()) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
 	addr := h.getRealUserIP(r)
 	agent := r.Header.Get("User-Agent")
 
@@ -3249,7 +3317,8 @@ func (h *Hub) serveWs(w http.ResponseWriter, r *http.Request) {
 
 	ctx := log.NewLoggerContext(r.Context(), h.logger)
 	if conn.Subprotocol() == janus.EventsSubprotocol {
-		janus.RunEventsHandler(ctx, h.mcu, conn, addr, agent)
+		peerIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+		janus.RunEventsHandler(ctx, h.mcu, conn, peerIP, agent)
 		return
 	}
 

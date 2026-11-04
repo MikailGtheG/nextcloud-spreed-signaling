@@ -302,6 +302,31 @@ func (s *janusEventSender) AddEvent(t *testing.T, eventType int, eventSubtype in
 	s.events = append(s.events, message)
 }
 
+// TestJanusEventsHandlerRejectsOversizedMessages ensures a peer cannot force
+// the handler to buffer arbitrarily large JSON messages.
+func TestJanusEventsHandlerRejectsOversizedMessages(t *testing.T) {
+	t.Parallel()
+
+	_, url, handler := NewTestJanusEventsHandlerServer(t)
+	handler.mcu = &TestMcuWithEvents{t: t}
+
+	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
+	defer cancel()
+
+	dialer := websocket.Dialer{
+		Subprotocols: []string{EventsSubprotocol},
+	}
+	conn, _, err := dialer.DialContext(ctx, url, nil)
+	require.NoError(t, err)
+	defer conn.Close() // nolint
+
+	payload := strings.Repeat("x", maxJanusEventMessageSize+1)
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(payload)))
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(testTimeout)))
+	_, _, err = conn.ReadMessage()
+	require.Error(t, err, "oversized Janus event was not rejected")
+}
+
 func TestJanusEventsHandlerDifferentTypes(t *testing.T) {
 	t.Parallel()
 	require := require.New(t)

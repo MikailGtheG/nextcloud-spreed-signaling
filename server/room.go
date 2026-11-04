@@ -848,6 +848,12 @@ func (r *Room) addInternalSessionsLocked(users []api.StringMap, includeClustered
 	}
 
 	skipSession := make(map[api.PublicSessionId]bool)
+	// Build the lookup once instead of scanning every virtual session for
+	// each user lacking a userId (quadratic with large rooms).
+	virtualById := make(map[api.PublicSessionId]*VirtualSession, len(r.virtualSessions))
+	for session := range r.virtualSessions {
+		virtualById[session.PublicId()] = session
+	}
 	for _, user := range users {
 		sessionid, found := user.SessionId()
 		if !found || sessionid == "" {
@@ -861,15 +867,10 @@ func (r *Room) addInternalSessionsLocked(users []api.StringMap, includeClustered
 				user["virtual"] = true
 				user["inCall"] = entry.GetInCall()
 				skipSession[sessionid] = true
-			} else {
-				for session := range r.virtualSessions {
-					if session.PublicId() == sessionid {
-						user["virtual"] = true
-						user["inCall"] = session.GetInCall()
-						skipSession[sessionid] = true
-						break
-					}
-				}
+			} else if session, found := virtualById[sessionid]; found {
+				user["virtual"] = true
+				user["inCall"] = session.GetInCall()
+				skipSession[sessionid] = true
 			}
 		}
 	}
@@ -1378,35 +1379,22 @@ func (r *Room) publishActiveSessions() (int, *sync.WaitGroup) {
 
 	entries := make(map[string][]talk.BackendPingEntry)
 	urls := make(map[string]*url.URL)
+	// Most sessions in one room share the same backend. Avoid parsing and
+	// canonicalizing the identical URL for every participant on each ping.
+	parsedUrls := make(map[string]*url.URL)
 	for _, session := range r.sessions {
-		u := session.BackendUrl()
-		if u == "" {
+		backendUrl := session.BackendUrl()
+		if backendUrl == "" {
 			continue
 		}
-
-		u += PathToOcsSignalingBackend
-		parsed, err := url.Parse(u)
-		if err != nil {
-			r.logger.Printf("Could not parse backend url %s: %s", u, err)
-			continue
-		}
-
-		var changed bool
-		if parsed, changed = internal.CanonicalizeUrl(parsed); changed {
-			u = parsed.String()
-		}
-
-		parsedBackendUrl := parsed
 
 		var sid api.RoomSessionId
 		var uid string
 		switch sess := session.(type) {
 		case *ClientSession:
-			// Use Nextcloud session id and user id
 			sid = sess.RoomSessionId()
 			uid = sess.AuthUserId()
 		case *VirtualSession:
-			// Use our internal generated session id (will be added to Nextcloud).
 			sid = api.RoomSessionId(sess.PublicId())
 			uid = sess.UserId()
 		default:
@@ -1415,16 +1403,31 @@ func (r *Room) publishActiveSessions() (int, *sync.WaitGroup) {
 		if sid == "" {
 			continue
 		}
-		e, found := entries[u]
+
+		parsed, found := parsedUrls[backendUrl]
 		if !found {
-			if parsedBackendUrl == nil {
-				// Should not happen, invalid URLs should get rejected earlier.
+			rawUrl := backendUrl + PathToOcsSignalingBackend
+			var err error
+			parsed, err = url.Parse(rawUrl)
+			if err != nil {
+				r.logger.Printf("Could not parse backend url %s: %s", rawUrl, err)
+				// A nil entry avoids repeating parsing and logging for the
+				// same invalid backend URL on each session.
+				parsedUrls[backendUrl] = nil
 				continue
 			}
-			urls[u] = parsedBackendUrl
+			parsed, _ = internal.CanonicalizeUrl(parsed)
+			parsedUrls[backendUrl] = parsed
+		}
+		if parsed == nil {
+			continue
 		}
 
-		entries[u] = append(e, talk.BackendPingEntry{
+		key := parsed.String()
+		if _, exists := urls[key]; !exists {
+			urls[key] = parsed
+		}
+		entries[key] = append(entries[key], talk.BackendPingEntry{
 			SessionId: sid,
 			UserId:    uid,
 		})
@@ -1444,7 +1447,7 @@ func (r *Room) publishActiveSessions() (int, *sync.WaitGroup) {
 			defer cancel()
 
 			if err := r.hub.roomPing.SendPings(sendCtx, r.id, url, entries); err != nil {
-				r.logger.Printf("Error pinging room %s for active entries %+v: %s", r.id, entries, err)
+				r.logger.Printf("Error pinging room %s (%d active entries): %s", r.id, len(entries), err)
 			}
 		}(urls[u], e)
 	}

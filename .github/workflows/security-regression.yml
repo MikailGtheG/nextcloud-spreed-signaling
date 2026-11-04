@@ -1,0 +1,46 @@
+name: Security regression review
+
+on:
+  pull_request:
+    branches: [ master ]
+    paths:
+      - '.github/workflows/security-regression.yml'
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  race-and-vet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.3'
+          cache: true
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l api/federation_url_hardening_test.go server/backend_request_size_test.go server/housekeeping_hardening_test.go sfu/janus/events_handler.go sfu/janus/events_handler_test.go server/federation_network_policy.go server/federation_janus_network_security_test.go server/janus_event_security.go)
+          test -z "$unformatted" || { echo "$unformatted"; exit 1; }
+      - name: Vet and race regression tests
+        run: |
+          go vet ./api ./server ./sfu/janus
+          go test -race -count=1 -timeout=180s -run 'Test(Housekeeping|BackendRequestBodyReadLimit|FederationURLValidation|FederationEgress|JanusEventPeerRestrictions|JanusEventsHandlerRejectsOversizedMessages)' ./api ./server ./sfu/janus
+
+  vulnerabilities:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.3'
+          cache: true
+      - name: Check reachable vulnerable Go dependencies
+        run: |
+          go run golang.org/x/vuln/cmd/govulncheck@latest ./...
