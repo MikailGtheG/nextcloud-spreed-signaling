@@ -333,8 +333,8 @@ func NewHub(ctx context.Context, cfg *goconf.ConfigFile, events events.AsyncEven
 	if !trustedProxiesIps.Empty() {
 		logger.Printf("Trusted proxies: %s", trustedProxiesIps)
 	} else {
-		trustedProxiesIps = client.DefaultTrustedProxies
-		logger.Printf("No trusted proxies configured, only allowing for %s", trustedProxiesIps)
+		trustedProxiesIps = container.DefaultAllowedIPs()
+		logger.Printf("No trusted proxies configured; only loopback peers may provide forwarding headers: %s", trustedProxiesIps)
 	}
 
 	decodeCaches := make([]*container.LruCache[*session.SessionIdData], 0, numDecodeCaches)
@@ -613,8 +613,8 @@ func (h *Hub) Reload(ctx context.Context, config *goconf.ConfigFile) {
 		if !trustedProxiesIps.Empty() {
 			h.logger.Printf("Trusted proxies: %s", trustedProxiesIps)
 		} else {
-			trustedProxiesIps = client.DefaultTrustedProxies
-			h.logger.Printf("No trusted proxies configured, only allowing for %s", trustedProxiesIps)
+			trustedProxiesIps = container.DefaultAllowedIPs()
+			h.logger.Printf("No trusted proxies configured; only loopback peers may provide forwarding headers: %s", trustedProxiesIps)
 		}
 		h.trustedProxies.Store(trustedProxiesIps)
 	} else {
