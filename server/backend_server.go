@@ -336,8 +336,16 @@ func (b *BackendServer) parseRequestBody(f func(context.Context, http.ResponseWr
 			return
 		}
 
+		// Enforce the limit while reading as well, independently of Content-Length.
+		// This protects the buffer pool when a request body has inconsistent framing.
+		r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
 		body, err := b.buffers.ReadAll(r.Body)
 		if err != nil {
+			var maxBytesError *http.MaxBytesError
+			if errors.As(err, &maxBytesError) {
+				http.Error(w, "Request entity too large", http.StatusRequestEntityTooLarge)
+				return
+			}
 			b.logger.Println("Error reading body: ", err)
 			http.Error(w, "Could not read body", http.StatusBadRequest)
 			return
