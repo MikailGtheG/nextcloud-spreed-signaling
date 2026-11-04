@@ -32,7 +32,7 @@ import (
 
 func TestFederationEgressPolicy(t *testing.T) {
 	cases := []struct {
-		ip string
+		ip   string
 		want bool
 	}{
 		{"8.8.8.8", true},
@@ -87,8 +87,8 @@ func TestJanusEventPeerRestrictions(t *testing.T) {
 	allowed := container.DefaultAllowedIPs()
 	cases := []struct {
 		name, peer string
-		forwarded bool
-		want bool
+		forwarded  bool
+		want       bool
 	}{
 		{"loopback", "127.0.0.1:19000", false, true},
 		{"ipv6-loopback", "[::1]:19000", false, true},
