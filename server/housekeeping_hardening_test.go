@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/strukturag/nextcloud-spreed-signaling/v2/api"
+	logtest "github.com/strukturag/nextcloud-spreed-signaling/v2/log/test"
 )
 
 // housekeepingMutationSession intentionally modifies the expiry map from Close.
@@ -30,7 +31,7 @@ func (s *housekeepingMutationSession) Close() {
 }
 
 func TestHousekeepingExpiredSessionsCanMutateMapOnClose(t *testing.T) {
-	h := &Hub{expiredSessions: make(map[Session]time.Time)}
+	h := &Hub{logger: logtest.NewLoggerForTest(t), expiredSessions: make(map[Session]time.Time)}
 	now := time.Now()
 	sessions := make([]*housekeepingMutationSession, 200)
 	for i := range sessions {
@@ -52,7 +53,7 @@ func TestHousekeepingExpiredSessionsCanMutateMapOnClose(t *testing.T) {
 }
 
 func TestHousekeepingDoesNotCloseResumedSession(t *testing.T) {
-	h := &Hub{expiredSessions: make(map[Session]time.Time)}
+	h := &Hub{logger: logtest.NewLoggerForTest(t), expiredSessions: make(map[Session]time.Time)}
 	now := time.Now()
 	s := &housekeepingMutationSession{hub: h}
 	h.expiredSessions[s] = now.Add(time.Minute)
