@@ -1099,11 +1099,11 @@ func (h *Hub) processRegister(client ClientWithSession, message *api.ClientMessa
 
 	userId := auth.Auth.UserId
 	if userId != "" {
-		h.logger.Printf("Register user %s@%s from %s in %s (%s) %s (private=%s)", userId, backend.Id(), client.RemoteAddr(), client.Country(), client.UserAgent(), publicSessionId, privateSessionId)
+		h.logger.Printf("Register user %s@%s from %s in %s (%s) %s", userId, backend.Id(), client.RemoteAddr(), client.Country(), client.UserAgent(), publicSessionId)
 	} else if message.Hello.Auth.Type != api.HelloClientTypeClient {
-		h.logger.Printf("Register %s@%s from %s in %s (%s) %s (private=%s)", message.Hello.Auth.Type, backend.Id(), client.RemoteAddr(), client.Country(), client.UserAgent(), publicSessionId, privateSessionId)
+		h.logger.Printf("Register %s@%s from %s in %s (%s) %s", message.Hello.Auth.Type, backend.Id(), client.RemoteAddr(), client.Country(), client.UserAgent(), publicSessionId)
 	} else {
-		h.logger.Printf("Register anonymous@%s from %s in %s (%s) %s (private=%s)", backend.Id(), client.RemoteAddr(), client.Country(), client.UserAgent(), publicSessionId, privateSessionId)
+		h.logger.Printf("Register anonymous@%s from %s in %s (%s) %s", backend.Id(), client.RemoteAddr(), client.Country(), client.UserAgent(), publicSessionId)
 	}
 
 	session, err := NewClientSession(h, privateSessionId, publicSessionId, sessionIdData, backend, message.Hello, auth.Auth)
@@ -1194,7 +1194,7 @@ func (h *Hub) processUnregister(client ClientWithSession) Session {
 	}
 	h.mu.Unlock()
 	if session != nil {
-		h.logger.Printf("Unregister %s (private=%s)", session.PublicId(), session.PrivateId())
+		h.logger.Printf("Unregister %s", session.PublicId())
 		if cs, ok := session.(*ClientSession); ok {
 			cs.ClearClient(client)
 		}
@@ -1219,14 +1219,14 @@ func (h *Hub) processMessage(client ClientWithSession, data []byte) {
 
 	if err := message.CheckValid(); err != nil {
 		if session := client.GetSession(); session != nil {
-			h.logger.Printf("Invalid message %+v from client %s: %v", message, session.PublicId(), err)
+			h.logger.Printf("Invalid message type %q from client %s: %v", message.Type, session.PublicId(), err)
 			if err, ok := err.(*api.Error); ok {
 				session.SendMessage(message.NewErrorServerMessage(err))
 			} else {
 				session.SendMessage(message.NewErrorServerMessage(InvalidFormat))
 			}
 		} else {
-			h.logger.Printf("Invalid message %+v from %s: %v", message, client.RemoteAddr(), err)
+			h.logger.Printf("Invalid message type %q from %s: %v", message.Type, client.RemoteAddr(), err)
 			if err, ok := err.(*api.Error); ok {
 				client.SendMessage(message.NewErrorServerMessage(err))
 			} else {
@@ -1275,9 +1275,9 @@ func (h *Hub) processMessage(client ClientWithSession, data []byte) {
 	case "bye":
 		h.processByeMsg(client, &message)
 	case "hello":
-		h.logger.Printf("Ignore hello %+v for already authenticated connection %s", message.Hello, session.PublicId())
+		h.logger.Printf("Ignore redundant hello for already authenticated connection %s", session.PublicId())
 	default:
-		h.logger.Printf("Ignore unknown message %+v from %s", message, session.PublicId())
+		h.logger.Printf("Ignore unknown message type %q from %s", message.Type, session.PublicId())
 	}
 }
 
@@ -1418,7 +1418,7 @@ func (h *Hub) processHello(client ClientWithSession, message *api.ClientMessage)
 		if !ok {
 			// Should never happen as clients only can resume their own sessions.
 			h.mu.Unlock()
-			h.logger.Printf("Client resumed non-client session %s (private=%s)", session.PublicId(), session.PrivateId())
+			h.logger.Printf("Client resumed non-client session %s", session.PublicId())
 			statsHubSessionResumeFailed.Inc()
 			client.SendMessage(message.NewErrorServerMessage(NoSuchSession))
 			return
@@ -1440,7 +1440,7 @@ func (h *Hub) processHello(client ClientWithSession, message *api.ClientMessage)
 		delete(h.expectHelloClients, client)
 		h.mu.Unlock()
 
-		h.logger.Printf("Resume session from %s in %s (%s) %s (private=%s)", client.RemoteAddr(), client.Country(), client.UserAgent(), session.PublicId(), session.PrivateId())
+		h.logger.Printf("Resume session from %s in %s (%s) %s", client.RemoteAddr(), client.Country(), client.UserAgent(), session.PublicId())
 
 		statsHubSessionsResumedTotal.WithLabelValues(clientSession.Backend().Id(), string(clientSession.ClientType())).Inc()
 		h.sendHelloResponse(clientSession, message)
@@ -2260,7 +2260,7 @@ func (h *Hub) processMessageMsg(sess Session, message *api.ClientMessage) {
 			var data api.MessageClientMessageData
 			if err := data.UnmarshalJSON(msg.Data); err == nil {
 				if err := data.CheckValid(); err != nil {
-					h.logger.Printf("Invalid message %+v from client %s: %v", message, session.PublicId(), err)
+					h.logger.Printf("Invalid message type %q from client %s: %v", message.Type, session.PublicId(), err)
 					if err, ok := err.(*api.Error); ok {
 						session.SendMessage(message.NewErrorServerMessage(err))
 					} else {
@@ -2377,7 +2377,7 @@ func (h *Hub) processMessageMsg(sess Session, message *api.ClientMessage) {
 					var data api.MessageClientMessageData
 					if err := data.UnmarshalJSON(msg.Data); err == nil {
 						if err := data.CheckValid(); err != nil {
-							h.logger.Printf("Invalid message %+v from client %s: %v", message, session.PublicId(), err)
+							h.logger.Printf("Invalid message type %q from client %s: %v", message.Type, session.PublicId(), err)
 							if err, ok := err.(*api.Error); ok {
 								session.SendMessage(message.NewErrorServerMessage(err))
 							} else {
